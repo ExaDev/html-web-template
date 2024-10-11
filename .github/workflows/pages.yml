@@ -5,30 +5,72 @@ on:
     branches:
       - main
   pull_request:
-    # types: [opened, synchronize, reopened, closed]
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - closed
+    types: [opened, synchronize, reopened, closed]
 
 jobs:
+  setup_pages:
+    runs-on: ubuntu-latest
+    outputs:
+      environment_url: ${{ steps.configure_pages.outputs.environment_url }}
+    steps:
+      - name: Configure GitHub Pages
+        id: configure_pages
+        uses: actions/configure-pages@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   deploy_main:
     if: github.event_name == 'push'
+    needs: setup_pages
     runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ needs.setup_pages.outputs.environment_url }}
+    env:
+      BASE_URL: ${{ needs.setup_pages.outputs.environment_url }}
     steps:
       - name: Checkout main branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Set up Git user
         run: |
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor }}@users.noreply.github.com"
 
+      - name: Create Deployment
+        id: create_deployment
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: deployment } = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.ref,
+              required_contexts: [],
+              environment: 'production',
+              auto_merge: false
+            });
+            core.setOutput('deployment_id', deployment.id);
+
+      - name: Set Deployment Status to in_progress
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: ${{ steps.create_deployment.outputs.deployment_id }},
+              state: 'in_progress'
+            });
+
       - name: Switch to gh-pages branch
         run: |
-          git fetch origin gh-pages || git checkout --orphan gh-pages
-          git checkout gh-pages
+          git fetch origin
+          git checkout gh-pages || git checkout --orphan gh-pages
+          git reset --hard
+          git status
 
       - name: Clean old files
         run: |
@@ -40,6 +82,10 @@ jobs:
           cp -r ../* ./
           cp -r ../.[!.]* ./
 
+      - name: Ensure CNAME file
+        run: |
+          echo 'your.custom.domain' > CNAME
+
       - name: Commit and push changes
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -48,19 +94,79 @@ jobs:
           git commit -m "Deploy from main branch" || echo "No changes to commit"
           git push origin gh-pages
 
+      - name: Set Deployment Status to success
+        if: success()
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: ${{ steps.create_deployment.outputs.deployment_id }},
+              state: 'success',
+              environment_url: process.env.BASE_URL
+            })
+
+      - name: Set Deployment Status to failure
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: ${{ steps.create_deployment.outputs.deployment_id }},
+              state: 'failure'
+            })
+
   deploy_pr:
     if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    needs: setup_pages
     runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.event.pull_request.head.ref }}
+      url: ${{ needs.setup_pages.outputs.environment_url }}/${{ github.event.pull_request.head.ref }}/
     env:
       BRANCH_NAME: ${{ github.event.pull_request.head.ref }}
+      BASE_URL: ${{ needs.setup_pages.outputs.environment_url }}
     steps:
       - name: Checkout PR branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Set up Git user
         run: |
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor }}@users.noreply.github.com"
+
+      - name: Create Deployment
+        id: create_deployment
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: deployment } = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.payload.pull_request.head.sha,
+              required_contexts: [],
+              environment: process.env.BRANCH_NAME,
+              auto_merge: false
+            });
+            core.setOutput('deployment_id', deployment.id);
+
+      - name: Set Deployment Status to in_progress
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: ${{ steps.create_deployment.outputs.deployment_id }},
+              state: 'in_progress'
+            });
 
       - name: Copy files to temp directory
         run: |
@@ -70,8 +176,10 @@ jobs:
 
       - name: Switch to gh-pages branch
         run: |
-          git fetch origin gh-pages || git checkout --orphan gh-pages
-          git checkout gh-pages
+          git fetch origin
+          git checkout gh-pages || git checkout --orphan gh-pages
+          git reset --hard
+          git status
 
       - name: Copy files to branch directory
         run: |
@@ -80,22 +188,55 @@ jobs:
           cp -r ../temp/* "$BRANCH_NAME"/
           cp -r ../temp/.[!.]* "$BRANCH_NAME"/
 
+      - name: Ensure CNAME file
+        run: |
+          echo 'your.custom.domain' > CNAME
+
       - name: Commit and push changes
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git add "$BRANCH_NAME"
+          git add "$BRANCH_NAME" CNAME
           git commit -m "Deploy branch $BRANCH_NAME" || echo "No changes to commit"
           git push origin gh-pages
+
+      - name: Set Deployment Status to success
+        if: success()
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: ${{ steps.create_deployment.outputs.deployment_id }},
+              state: 'success',
+              environment_url: `${process.env.BASE_URL}/${process.env.BRANCH_NAME}/`
+            });
+
+      - name: Set Deployment Status to failure
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: ${{ steps.create_deployment.outputs.deployment_id }},
+              state: 'failure'
+            });
 
   cleanup_pr:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
     runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.event.pull_request.head.ref }}
     env:
       BRANCH_NAME: ${{ github.event.pull_request.head.ref }}
     steps:
       - name: Checkout gh-pages branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
         with:
           ref: gh-pages
 
@@ -114,3 +255,23 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git push origin gh-pages
+
+      - name: Mark Deployment as Inactive
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const deployments = await github.rest.repos.listDeployments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              environment: process.env.BRANCH_NAME,
+              per_page: 100
+            });
+            for (const deployment of deployments.data) {
+              await github.rest.repos.createDeploymentStatus({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                deployment_id: deployment.id,
+                state: 'inactive'
+              });
+            }
