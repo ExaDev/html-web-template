@@ -1,274 +1,134 @@
-name: Deploy to GitHub Pages
+name: Deploy to Environment GitHub Pages
 
 on:
   push:
-    branches:
-      - main
   pull_request:
-    types: [opened, synchronize, reopened, closed]
+    types:
+      - opened
+      - reopened
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
-  setup_pages:
+  configure:
     runs-on: ubuntu-latest
-    outputs:
-      environment_url: ${{ steps.configure_pages.outputs.environment_url }}
+    permissions:
+      pages: read
     steps:
-      - name: Configure GitHub Pages
-        id: configure_pages
+      - name: Check secrets
+        id: check_secrets
+        run: |
+          echo "GH_APP_ID_EXISTS=${{ secrets.GH_APP_ID && 'true' || 'false' }}" >> $GITHUB_OUTPUT
+          echo "GH_APP_PRIVATE_KEY_EXISTS=${{ secrets.GH_APP_PRIVATE_KEY && 'true' || 'false' }}" >> $GITHUB_OUTPUT
+          echo "GH_APP_EXISTS=${{ secrets.GH_APP_ID && secrets.GH_APP_PRIVATE_KEY && 'true' || 'false' }}" >> $GITHUB_OUTPUT
+
+      - name: Generate a token
+        if: steps.check_secrets.outputs.GH_APP_EXISTS == 'true'
+        continue-on-error: true
+        id: generate_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+
+      - name: Setup Pages
+        id: pages
         uses: actions/configure-pages@v5
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          enablement: ${{ steps.generate_token.outputs.token && 'true' || 'false' }}
+          token: ${{ steps.generate_token.outputs.token || github.token }}
+    outputs:
+      base_url: ${{ steps.pages.outputs.base_url }}
+      origin: ${{ steps.pages.outputs.origin }}
+      host: ${{ steps.pages.outputs.host }}
+      base_path: ${{ steps.pages.outputs.base_path }}
 
-  deploy_main:
-    if: github.event_name == 'push'
-    needs: setup_pages
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: production
-      url: ${{ needs.setup_pages.outputs.environment_url }}
-    env:
-      BASE_URL: ${{ needs.setup_pages.outputs.environment_url }}
+    needs:
+      - configure
     steps:
-      - name: Checkout main branch
-        uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Set up Git user
+      - name: Build project for vanilla HTML site
         run: |
-          git config user.name "${{ github.actor }}"
-          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          echo "No build process needed for vanilla HTML site"
 
-      - name: Create Deployment
-        id: create_deployment
-        uses: actions/github-script@v6
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const { data: deployment } = await github.rest.repos.createDeployment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: context.ref,
-              required_contexts: [],
-              environment: 'production',
-              auto_merge: false
-            });
-            core.setOutput('deployment_id', deployment.id);
+          name: site
+          path: . # Assuming all the HTML, CSS, and JS files are in the root directory
 
-      - name: Set Deployment Status to in_progress
-        uses: actions/github-script@v6
+  deploy:
+    needs:
+      - configure
+      - build
+    permissions:
+      pages: write
+      id-token: write
+      contents: write
+    environment:
+      name: ${{ github.ref_name == 'main' && 'production' || 'ref/' }}${{ github.ref_name }}
+      url: ${{ github.ref_name == 'main' && needs.configure.outputs.base_url || format('{0}/ref/{1}', needs.configure.outputs.base_url, github.ref_name) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pages branch
+        uses: actions/checkout@v4
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.repos.createDeploymentStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              deployment_id: ${{ steps.create_deployment.outputs.deployment_id }},
-              state: 'in_progress'
-            });
+          sparse-checkout: |
 
-      - name: Copy files to temp directory
-        run: |
-          mkdir ../temp
-          cp -r * ../temp/
-          cp -r .[!.]* ../temp/
-
-      - name: Switch to gh-pages branch
+      - name: Prepare pages branch
         run: |
           git fetch origin
           git checkout gh-pages || git checkout --orphan gh-pages
           git reset --hard
           git status
 
-      - name: Clean old files
-        run: |
-          git rm -rf . || echo "No files to remove"
-          git clean -fdx
-
-      - name: Copy files to gh-pages
-        run: |
-          cp -r ../temp/* ./
-          cp -r ../temp/.[!.]* ./
-
-      - name: Commit and push changes
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git add -A
-          git commit -m "Deploy from main branch" || echo "No changes to commit"
-          git push origin gh-pages
-
-      - name: Set Deployment Status to success
-        if: success()
-        uses: actions/github-script@v6
+      - name: Download artifact
+        uses: actions/download-artifact@v4
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.repos.createDeploymentStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              deployment_id: ${{ steps.create_deployment.outputs.deployment_id }},
-              state: 'success',
-              environment_url: process.env.BASE_URL
-            })
+          name: site
+          path: site
 
-      - name: Set Deployment Status to failure
-        if: failure()
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.repos.createDeploymentStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              deployment_id: ${{ steps.create_deployment.outputs.deployment_id }},
-              state: 'failure'
-            })
+      - name: Move artifact to root folder for main branch
+        if: github.ref_name == 'main'
+        run: |
+          mv site/* .
 
-  deploy_pr:
-    if: github.event_name == 'pull_request' && github.event.action != 'closed'
-    needs: setup_pages
-    runs-on: ubuntu-latest
-    environment:
-      name: ${{ github.event.pull_request.head.ref }}
-      url: ${{ needs.setup_pages.outputs.environment_url }}/${{ github.event.pull_request.head.ref }}/
-    env:
-      BRANCH_NAME: ${{ github.event.pull_request.head.ref }}
-      BASE_URL: ${{ needs.setup_pages.outputs.environment_url }}
-    steps:
-      - name: Checkout PR branch
-        uses: actions/checkout@v3
+      - name: Move artifact to ref folder for non-main branches
+        if: github.ref_name != 'main'
+        run: |
+          mkdir -p ref/${{ github.ref_name }}
+          mv site/* ref/${{ github.ref_name }}
 
-      - name: Set up Git user
+      - run: ls -alRh
+
+      - name: Configure Git
         run: |
           git config user.name "${{ github.actor }}"
-          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          git config user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
 
-      - name: Create Deployment
-        id: create_deployment
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const { data: deployment } = await github.rest.repos.createDeployment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: context.payload.pull_request.head.sha,
-              required_contexts: [],
-              environment: process.env.BRANCH_NAME,
-              auto_merge: false
-            });
-            core.setOutput('deployment_id', deployment.id);
-
-      - name: Set Deployment Status to in_progress
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.repos.createDeploymentStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              deployment_id: ${{ steps.create_deployment.outputs.deployment_id }},
-              state: 'in_progress'
-            });
-
-      - name: Copy files to temp directory
+      - name: Stage changes for main branch
+        if: github.ref_name == 'main'
         run: |
-          mkdir ../temp
-          cp -r * ../temp/
-          cp -r .[!.]* ../temp/
+          git add .
 
-      - name: Switch to gh-pages branch
+      - name: Stage changes for other branches
+        if: github.ref_name != 'main'
         run: |
-          git fetch origin
-          git checkout gh-pages || git checkout --orphan gh-pages
-          git reset --hard
-          git status
+          git add ref/${{ github.ref_name }}
 
-      - name: Copy files to branch directory
+      - name: Commit changes
         run: |
-          mkdir -p "$BRANCH_NAME"
-          rm -rf "$BRANCH_NAME"/*
-          cp -r ../temp/* "$BRANCH_NAME"/
-          cp -r ../temp/.[!.]* "$BRANCH_NAME"/
+          git commit -m "Deploy ${{ github.ref_name }} to GitHub Pages"
 
-      - name: Commit and push changes
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push changes
         run: |
-          git commit -m "Deploy branch $BRANCH_NAME" || echo "No changes to commit"
-          git push origin gh-pages
-
-      - name: Set Deployment Status to success
-        if: success()
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.repos.createDeploymentStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              deployment_id: ${{ steps.create_deployment.outputs.deployment_id }},
-              state: 'success',
-              environment_url: `${process.env.BASE_URL}/${process.env.BRANCH_NAME}/`
-            });
-
-      - name: Set Deployment Status to failure
-        if: failure()
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.repos.createDeploymentStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              deployment_id: ${{ steps.create_deployment.outputs.deployment_id }},
-              state: 'failure'
-            });
-
-  cleanup_pr:
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
-    runs-on: ubuntu-latest
-    environment:
-      name: ${{ github.event.pull_request.head.ref }}
-    env:
-      BRANCH_NAME: ${{ github.event.pull_request.head.ref }}
-    steps:
-      - name: Checkout gh-pages branch
-        uses: actions/checkout@v3
-        with:
-          ref: gh-pages
-
-      - name: Set up Git user
-        run: |
-          git config user.name "${{ github.actor }}"
-          git config user.email "${{ github.actor }}@users.noreply.github.com"
-
-      - name: Remove branch directory
-        run: |
-          git rm -rf "$BRANCH_NAME" || echo "No files to remove"
-          git commit -m "Cleanup branch $BRANCH_NAME" || echo "No changes to commit"
-
-      - name: Push cleanup changes
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git push origin gh-pages
-
-      - name: Mark Deployment as Inactive
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const deployments = await github.rest.repos.listDeployments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              environment: process.env.BRANCH_NAME,
-              per_page: 100
-            });
-            for (const deployment of deployments.data) {
-              await github.rest.repos.createDeploymentStatus({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                deployment_id: deployment.id,
-                state: 'inactive'
-              });
-            }
+          git push --set-upstream origin gh-pages
