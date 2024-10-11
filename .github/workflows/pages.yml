@@ -133,7 +133,7 @@ jobs:
 
       - name: Commit changes
         run: |
-          git commit -m "Deploy ${{ github.ref_name }} to GitHub Pages"
+          git commit -m "Deploy ${{ github.ref_name }} to GitHub Pages" || echo "No changes to commit"
 
       - name: Push changes
         run: |
