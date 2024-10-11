@@ -80,7 +80,7 @@ jobs:
       contents: write
     environment:
       name: ${{ github.ref_name == 'main' && 'production' || 'ref/' }}${{ github.ref_name }}
-      url: ${{ needs.configure.outputs.base_url }}/${{ github.ref_name == 'main' && '' || 'ref/${{ github.ref_name }}' }}
+      url: ${{ needs.configure.outputs.base_url }}/${{ github.ref_name == 'main' && '' || 'ref/' && github.ref_name }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout pages branch
