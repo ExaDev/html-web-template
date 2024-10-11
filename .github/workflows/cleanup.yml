@@ -1,0 +1,45 @@
+name: Cleanup Redundant Deployments
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"  # Runs every Monday at 6:00 AM
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      contents: write
+
+    steps:
+      - name: Checkout gh-pages branch
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+
+      - name: List current branches
+        run: |
+          echo "Listing current refs..."
+          git ls-tree -r gh-pages --name-only
+
+      - name: Cleanup old deployments
+        run: |
+          # Find and delete directories in 'ref' that are older than 30 days
+          echo "Cleaning up old deployments in 'ref/'"
+          find ref/ -type d -mtime +30 -exec rm -rf {} \;
+
+      - name: Stage changes
+        run: |
+          git add .
+          git status
+
+      - name: Commit cleanup
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
+          git commit -m "Cleanup old deployments" || echo "No changes to commit"
+
+      - name: Push changes
+        run: |
+          git push origin gh-pages
