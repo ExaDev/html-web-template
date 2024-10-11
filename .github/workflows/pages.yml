@@ -80,8 +80,8 @@ jobs:
       id-token: write
       contents: write
     environment:
-      url: ${{ needs.configure.outputs.base_url }}/${{ github.ref_name != 'main' && format('ref/%s', github.ref_name) }}
-      name: ${{ github.ref_name == 'main' && 'production' || format('Preview %s', github.ref_name) }}
+      url: ${{ needs.configure.outputs.base_url }}/${{ github.ref_name != 'main' && format('ref/{0}', github.ref_name) }}
+      name: ${{ github.ref_name == 'main' && 'production' || github.ref_name }}
 
     runs-on: ubuntu-latest
     steps:
