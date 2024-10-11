@@ -1,0 +1,116 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    # types: [opened, synchronize, reopened, closed]
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - closed
+
+jobs:
+  deploy_main:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+
+      - name: Set up Git user
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+
+      - name: Switch to gh-pages branch
+        run: |
+          git fetch origin gh-pages || git checkout --orphan gh-pages
+          git checkout gh-pages
+
+      - name: Clean old files
+        run: |
+          git rm -rf .
+          git clean -fdx
+
+      - name: Copy files to gh-pages
+        run: |
+          cp -r ../* ./
+          cp -r ../.[!.]* ./
+
+      - name: Commit and push changes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git add -A
+          git commit -m "Deploy from main branch" || echo "No changes to commit"
+          git push origin gh-pages
+
+  deploy_pr:
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    env:
+      BRANCH_NAME: ${{ github.event.pull_request.head.ref }}
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Set up Git user
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+
+      - name: Copy files to temp directory
+        run: |
+          mkdir ../temp
+          cp -r * ../temp/
+          cp -r .[!.]* ../temp/
+
+      - name: Switch to gh-pages branch
+        run: |
+          git fetch origin gh-pages || git checkout --orphan gh-pages
+          git checkout gh-pages
+
+      - name: Copy files to branch directory
+        run: |
+          mkdir -p "$BRANCH_NAME"
+          rm -rf "$BRANCH_NAME"/*
+          cp -r ../temp/* "$BRANCH_NAME"/
+          cp -r ../temp/.[!.]* "$BRANCH_NAME"/
+
+      - name: Commit and push changes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git add "$BRANCH_NAME"
+          git commit -m "Deploy branch $BRANCH_NAME" || echo "No changes to commit"
+          git push origin gh-pages
+
+  cleanup_pr:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    env:
+      BRANCH_NAME: ${{ github.event.pull_request.head.ref }}
+    steps:
+      - name: Checkout gh-pages branch
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+
+      - name: Set up Git user
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+
+      - name: Remove branch directory
+        run: |
+          git rm -rf "$BRANCH_NAME"
+          git commit -m "Cleanup branch $BRANCH_NAME" || echo "No changes to commit"
+
+      - name: Push cleanup changes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git push origin gh-pages
