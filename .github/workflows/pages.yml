@@ -44,6 +44,7 @@ jobs:
         with:
           enablement: ${{ steps.generate_token.outputs.token && 'true' || 'false' }}
           token: ${{ steps.generate_token.outputs.token || github.token }}
+
     outputs:
       base_url: ${{ steps.pages.outputs.base_url }}
       origin: ${{ steps.pages.outputs.origin }}
@@ -79,8 +80,9 @@ jobs:
       id-token: write
       contents: write
     environment:
-      name: ${{ github.ref_name == 'main' && 'production' || 'ref/' }}${{ github.ref_name }}
-      url: ${{ github.ref_name == 'main' && needs.configure.outputs.base_url || format('{0}/ref/{1}', needs.configure.outputs.base_url, github.ref_name) }}
+      url: ${{ needs.configure.outputs.base_url }}/${{ github.ref_name != 'main' && format('ref/{0}', github.ref_name) }}
+      name: ${{ github.ref_name == 'main' && 'production' || github.ref_name }}
+
     runs-on: ubuntu-latest
     steps:
       - name: Checkout pages branch

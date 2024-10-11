@@ -1,1 +1,1 @@
-# web-template
+# Web Template
