@@ -15,7 +15,7 @@ jobs:
     steps:
       - name: Configure GitHub Pages
         id: configure_pages
-        uses: actions/configure-pages@v3
+        uses: actions/configure-pages@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -74,17 +74,13 @@ jobs:
 
       - name: Clean old files
         run: |
-          git rm -rf .
+          git rm -rf . || echo "No files to remove"
           git clean -fdx
 
       - name: Copy files to gh-pages
         run: |
           cp -r ../* ./
           cp -r ../.[!.]* ./
-
-      - name: Ensure CNAME file
-        run: |
-          echo 'your.custom.domain' > CNAME
 
       - name: Commit and push changes
         env:
@@ -188,15 +184,10 @@ jobs:
           cp -r ../temp/* "$BRANCH_NAME"/
           cp -r ../temp/.[!.]* "$BRANCH_NAME"/
 
-      - name: Ensure CNAME file
-        run: |
-          echo 'your.custom.domain' > CNAME
-
       - name: Commit and push changes
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git add "$BRANCH_NAME" CNAME
           git commit -m "Deploy branch $BRANCH_NAME" || echo "No changes to commit"
           git push origin gh-pages
 
@@ -247,7 +238,7 @@ jobs:
 
       - name: Remove branch directory
         run: |
-          git rm -rf "$BRANCH_NAME"
+          git rm -rf "$BRANCH_NAME" || echo "No files to remove"
           git commit -m "Cleanup branch $BRANCH_NAME" || echo "No changes to commit"
 
       - name: Push cleanup changes
